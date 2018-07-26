@@ -50,6 +50,11 @@ if (functionIncludePackagesString) {
 }
 
 /**
+ * Optionally use unprivileged container builds.
+ */
+export let unprivilegedContainerBuild = config.getBoolean("unprivilegedContainerBuild") || false;
+
+/**
  * Set the IAM role policies to apply to compute (both Lambda and ECS) within this Pulumi program. The default is:
  * "arn:aws:iam::aws:policy/AWSLambdaFullAccess,arn:aws:iam::aws:policy/AmazonEC2ContainerServiceFullAccess".
  */

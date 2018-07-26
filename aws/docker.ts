@@ -87,7 +87,7 @@ export function buildAndPushImage(
 
             for (const stage of result.stages) {
                 await pushImageAsync(
-                    localStageImageName(unprivileged, imageName, stage), url, logResource, stage);
+                   unprivileged, localStageImageName(imageName, stage), url, logResource, stage);
             }
         }
         return result.digest;
@@ -169,7 +169,8 @@ async function buildImageAsync(
                 cachedImgVersionString = versionResult.stdout;
                 pulumi.log.debug(`'img version' => ${cachedImgVersionString}`, logResource);
             } catch (err) {
-                throw new RunError("No 'img' command available on PATH: Please install to use unprivileged container 'build' mode.");
+                throw new RunError(
+                    "No 'img' command available on PATH: Please install to use unprivileged container 'build' mode.");
             }
         }
     } else {
@@ -183,7 +184,8 @@ async function buildImageAsync(
                 cachedDockerVersionString = versionResult.stdout;
                 pulumi.log.debug(`'docker version' => ${cachedDockerVersionString}`, logResource);
             } catch (err) {
-                throw new RunError("No 'docker' command available on PATH: Please install to use container 'build' mode.");
+                throw new RunError(
+                    "No 'docker' command available on PATH: Please install to use container 'build' mode.");
             }
 
             // Decide whether to use --password or --password-stdin based on the client version.
@@ -213,15 +215,41 @@ async function buildImageAsync(
     await dockerBuild(unprivileged, imageName, build, cacheFrom, logResource);
 
     // Finally, inspect the image so we can return the SHA digest.
-    const inspectResult = await runCLICommand(
-        "docker", ["image", "inspect", "-f", "{{.Id}}", imageName], logResource);
-    if (inspectResult.code || !inspectResult.stdout) {
-        throw new RunError(
-            `No digest available for image ${imageName}: ${inspectResult.code} -- ${inspectResult.stdout}`);
+    let getDigest: () => Promise<string>;
+    if (!unprivileged) {
+        getDigest = async () => {
+            const inspectResult = await runCLICommand(
+                "docker", ["image", "inspect", "-f", "{{.Id}}", imageName], logResource);
+            if (inspectResult.code || !inspectResult.stdout) {
+                throw new RunError(
+                    `No digest available for image ${imageName}: ${inspectResult.code} -- ${inspectResult.stdout}`);
+            }
+            return inspectResult.stdout.trim();
+        };
+    } else {
+        getDigest = async () => {
+            const lsResult = await runCLICommand(
+                "img", ["ls", "-f", `name~=docker.io/library/${imageName}`], logResource);
+            if (lsResult.code) {
+                throw new RunError(
+                    `No digest available for image ${imageName}: ${lsResult.code} -- ${lsResult.stdout}`);
+            }
+            const digestRe = new RegExp(`(sha256:[a-f0-9]+$)`, "gm");
+            const match = digestRe.exec(lsResult.stdout!);
+            if (match === null) {
+                throw new RunError(
+                    `No digest available for image ${imageName}: ${lsResult.code} -- ${lsResult.stdout}`);
+            }
+            if (digestRe.exec(lsResult.stdout!) !== null) {
+                throw new RunError(
+                    `Ambiguous digest for image ${imageName}: ${lsResult.code} -- ${lsResult.stdout}`);
+            }
+            return match[0];
+        };
     }
 
     return {
-        digest: inspectResult.stdout.trim(),
+        digest: await getDigest(),
         stages: stages,
     };
 }
@@ -250,12 +278,13 @@ async function dockerBuild(
             buildArgs.push(...[ "--cache-from", cacheFromImages.join() ]);
         }
     }
-    buildArgs.push(build.context!); // push the docker build context onto the path.
 
     buildArgs.push(...[ "-t", imageName ]); // tag the image with the chosen name.
     if (target) {
         buildArgs.push(...[ "--target", target ]);
     }
+
+    buildArgs.push(build.context!); // push the docker build context onto the path.
 
     const buildResult = await runCLICommand(unprivileged ? "img" : "docker", buildArgs, logResource);
     if (buildResult.code) {
