@@ -270,9 +270,9 @@ function computeImage(
             // with an environment variable for the image digest to ensure the TaskDefinition get's
             // replaced IFF the built image changes.
             const {repositoryUrl, registryId} = repository!;
-            const unprivileged = config.unprivilegedContainerBuild;
+            const buildWithImg = config.buildWithImg;
             imageDigest = docker.buildAndPushImage(
-                unprivileged, imageName, container, repositoryUrl, repository, async () => {
+                buildWithImg, imageName, container, repositoryUrl, repository, async () => {
                 // Construct Docker registry auth data by getting the short-lived authorizationToken from ECR, and
                 // extracting the username/password pair after base64-decoding the token.
                 //

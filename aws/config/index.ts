@@ -50,9 +50,9 @@ if (functionIncludePackagesString) {
 }
 
 /**
- * Optionally use unprivileged container builds.
+ * Optionally use img for container builds.
  */
-export let unprivilegedContainerBuild = config.getBoolean("unprivilegedContainerBuild") || false;
+export let buildWithImg = config.getBoolean("buildWithImg") || false;
 
 /**
  * Set the IAM role policies to apply to compute (both Lambda and ECS) within this Pulumi program. The default is:

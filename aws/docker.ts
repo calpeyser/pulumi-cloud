@@ -39,7 +39,7 @@ interface BuildResult {
 // buildAndPushImage will build and push the Dockerfile and context from [buildPath] into the requested ECR
 // [repository].  It returns the digest of the built image.
 export function buildAndPushImage(
-    unprivileged: boolean,
+    buildWithImg: boolean,
     imageName: string,
     container: cloud.Container,
     repositoryUrl: pulumi.Input<string>,
@@ -50,15 +50,15 @@ export function buildAndPushImage(
     const login = () => {
         if (!loggedIn) {
             console.log("logging in to registry...");
-            loggedIn = connectToRegistry().then(r => loginToRegistry(unprivileged, r, logResource));
+            loggedIn = connectToRegistry().then(r => loginToRegistry(buildWithImg, r, logResource));
         }
         return loggedIn;
     };
 
     // If the container specified a cacheFrom parameter, first set up the cached stages. Note that this does not work
-    // for unprivileged builds.
+    // for buildWithImg builds.
     let cacheFrom: Promise<string[] | undefined>;
-    if (!unprivileged && typeof container.build !== "string" && container.build && container.build.cacheFrom) {
+    if (!buildWithImg && typeof container.build !== "string" && container.build && container.build.cacheFrom) {
         // NOTE: we pull the promise out of the repository URL s.t. we can observe whether or not it exists. Were we
         // to instead hang an apply off of the raw Input<>, we would never end up running the pull if the repository
         // had not yet been created.
@@ -70,7 +70,7 @@ export function buildAndPushImage(
     }
 
     // First build the image.
-    const buildResult = buildImageAsync(unprivileged, imageName, container, logResource, cacheFrom);
+    const buildResult = buildImageAsync(buildWithImg, imageName, container, logResource, cacheFrom);
 
     // Then collect its output digest as well as the repo url and repo registry id.
     const outputs = pulumi.all([buildResult, repositoryUrl]);
@@ -83,11 +83,11 @@ export function buildAndPushImage(
             await login();
 
             // Push the final image first, then push the stage images to use for caching.
-            await pushImageAsync(unprivileged, imageName, url, logResource);
+            await pushImageAsync(buildWithImg, imageName, url, logResource);
 
             for (const stage of result.stages) {
                 await pushImageAsync(
-                   unprivileged, localStageImageName(imageName, stage), url, logResource, stage);
+                   buildWithImg, localStageImageName(imageName, stage), url, logResource, stage);
             }
         }
         return result.digest;
@@ -133,7 +133,7 @@ function localStageImageName(imageName: string, stage: string): string {
 }
 
 async function buildImageAsync(
-    unprivileged: boolean,
+    buildWithImg: boolean,
     imageName: string,
     container: cloud.Container,
     logResource: pulumi.Resource,
@@ -162,7 +162,7 @@ async function buildImageAsync(
     );
 
     // Verify that the build tool is on the PATH.
-    if (unprivileged) {
+    if (buildWithImg) {
         if (!cachedImgVersionString) {
             try {
                 const versionResult = await runCLICommand("img", ["version"], logResource);
@@ -170,7 +170,7 @@ async function buildImageAsync(
                 pulumi.log.debug(`'img version' => ${cachedImgVersionString}`, logResource);
             } catch (err) {
                 throw new RunError(
-                    "No 'img' command available on PATH: Please install to use unprivileged container 'build' mode.");
+                    "No 'img' command available on PATH: Please install to use container 'build' mode.");
             }
         }
     } else {
@@ -203,20 +203,20 @@ async function buildImageAsync(
 
     // If the container build specified build stages to cache, build each in turn.
     const stages = [];
-    if (!unprivileged && build.cacheFrom && typeof build.cacheFrom !== "boolean" && build.cacheFrom.stages) {
+    if (!buildWithImg && build.cacheFrom && typeof build.cacheFrom !== "boolean" && build.cacheFrom.stages) {
         for (const stage of build.cacheFrom.stages) {
             await dockerBuild(
-                unprivileged, localStageImageName(imageName, stage), build, cacheFrom, logResource, stage);
+                buildWithImg, localStageImageName(imageName, stage), build, cacheFrom, logResource, stage);
             stages.push(stage);
         }
     }
 
     // Invoke Docker CLI commands to build.
-    await dockerBuild(unprivileged, imageName, build, cacheFrom, logResource);
+    await dockerBuild(buildWithImg, imageName, build, cacheFrom, logResource);
 
     // Finally, inspect the image so we can return the SHA digest.
     let getDigest: () => Promise<string>;
-    if (!unprivileged) {
+    if (!buildWithImg) {
         getDigest = async () => {
             const inspectResult = await runCLICommand(
                 "docker", ["image", "inspect", "-f", "{{.Id}}", imageName], logResource);
@@ -255,7 +255,7 @@ async function buildImageAsync(
 }
 
 async function dockerBuild(
-    unprivileged: boolean,
+    buildWithImg: boolean,
     imageName: string,
     build: cloud.ContainerBuild,
     cacheFrom: Promise<string[] | undefined>,
@@ -272,7 +272,7 @@ async function dockerBuild(
             buildArgs.push(...[ "--build-arg", `${arg}=${build.args[arg]}` ]);
         }
     }
-    if (!unprivileged && build.cacheFrom) {
+    if (!buildWithImg && build.cacheFrom) {
         const cacheFromImages = await cacheFrom;
         if (cacheFromImages) {
             buildArgs.push(...[ "--cache-from", cacheFromImages.join() ]);
@@ -286,17 +286,17 @@ async function dockerBuild(
 
     buildArgs.push(build.context!); // push the docker build context onto the path.
 
-    const buildResult = await runCLICommand(unprivileged ? "img" : "docker", buildArgs, logResource);
+    const buildResult = await runCLICommand(buildWithImg ? "img" : "docker", buildArgs, logResource);
     if (buildResult.code) {
         throw new RunError(`Docker build of image '${imageName}' failed with exit code: ${buildResult.code}`);
     }
 }
 
-async function loginToRegistry(unprivileged: boolean, registry: Registry, logResource: pulumi.Resource) {
+async function loginToRegistry(buildWithImg: boolean, registry: Registry, logResource: pulumi.Resource) {
     const { registry: registryName, username, password } = registry;
 
-    const passwordStdin = unprivileged || dockerPasswordStdin;
-    const tool = unprivileged ? "img" : "docker";
+    const passwordStdin = buildWithImg || dockerPasswordStdin;
+    const tool = buildWithImg ? "img" : "docker";
 
     let loginResult: CommandResult;
     if (!passwordStdin) {
@@ -313,7 +313,7 @@ async function loginToRegistry(unprivileged: boolean, registry: Registry, logRes
 }
 
 async function pushImageAsync(
-        unprivileged: boolean, imageName: string, repositoryUrl: string, logResource: pulumi.Resource, tag?: string) {
+        buildWithImg: boolean, imageName: string, repositoryUrl: string, logResource: pulumi.Resource, tag?: string) {
 
     // Tag and push the image to the remote repository.
     if (!repositoryUrl) {
@@ -323,7 +323,7 @@ async function pushImageAsync(
     tag = tag ? `:${tag}` : "";
     const targetImage = `${repositoryUrl}${tag}`;
 
-    const tool = unprivileged ? "img" : "docker";
+    const tool = buildWithImg ? "img" : "docker";
     const tagResult = await runCLICommand(tool, ["tag", imageName, targetImage], logResource);
     if (tagResult.code) {
         throw new RunError(`Failed to tag Docker image with remote registry URL ${repositoryUrl}`);
